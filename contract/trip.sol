@@ -5,8 +5,10 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract Trip is ERC20, AccessControl {
+
+contract Trip is ERC20, AccessControl, ReentrancyGuard {
     using SafeMath for uint256;
     
     uint256 public basePrice = 0.01 ether;
@@ -15,7 +17,7 @@ contract Trip is ERC20, AccessControl {
     uint256 public constant BASE_REBASE_INTERVAL = 1 days;
     uint256 public constant MAX_REBASE_INTERVAL = 3 days;
     uint8 public decimals = 18;
-    uint256 public constant maxSupply = 100000000 * 10 ** uint256(decimals);
+    uint256 constant public maxSupply = 100000000 * 10 ** uint256(decimals); // Constant variable to store the maximum supply of tokens
     mapping (uint256 => uint256) private historicalPrices;
 
     modifier onlyOwner() {
@@ -60,16 +62,20 @@ contract Trip is ERC20, AccessControl {
     struct MarketAndTimeSeriesData {
         MarketData marketData;
         TimeSeriesData timeSeriesData;
-    }
+
+        constructor(MarketData memory _marketData, TimeSeriesData memory _timeSeriesData) public {
+    require(_timeSeriesData.dataPoints.length == 1, "Time series data should have a single data point");
+    marketData = _marketData;
+    timeSeriesData = _timeSeriesData;
+}
+
+
 
     event Rebase(uint256 indexed newSupply, uint256 indexed timestamp);
 
-    // Constant variable to store the maximum supply of tokens
-    uint256 constant public maxSupply = 100000000 * 10 ** uint256(decimals);
-
     constructor(address _priceFeedAddress) ERC20("TRIP", "TRIP") {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _mint(msg.sender, 100000000 * 10 ** decimals());
+        _mint(msg.sender, maxSupply);
         priceFeed = AggregatorV3Interface(_priceFeedAddress);
 
         // Set the initial last price and next rebase time
@@ -94,90 +100,86 @@ contract Trip is ERC20, AccessControl {
     }
 
     function calculateRebaseInterval() internal view returns (uint256) {
-    // Load historical price data from a database or API
-    uint256[] memory historicalPrices = [100, 120, 110, 130, 140, 150, 170, 160, 180, 190];
+        uint256[] memory historicalPrices = new uint256[](priceHistory.length);
+        for (uint256 i = 0; i < priceHistory.length; i++) {
+            historicalPrices[i] = priceHistory[i];
+        }
 
-    // Calculate daily percentage changes in price
-    uint256[] memory dailyChanges = new uint256[](historicalPrices.length - 1);
-    for (uint256 i = 1; i < historicalPrices.length; i++) {
-        dailyChanges[i - 1] = (historicalPrices[i] * 100) / historicalPrices[i - 1] - 100;
+        uint256[] memory dailyChanges = new uint256[](historicalPrices.length - 1);
+        for (uint256 i = 1; i < historicalPrices.length; i++) {
+            dailyChanges[i - 1] = (historicalPrices[i] * 100) / historicalPrices[i - 1] - 100;
+        }
+
+        uint256 totalVolatility = 0;
+        for (uint256 i = 0; i < dailyChanges.length; i++) {
+            totalVolatility += dailyChanges[i];
+        }
+        uint256 averageVolatility = totalVolatility / dailyChanges.length;
+
+        uint256 newRebaseInterval;
+        if (averageVolatility < 5) {
+            newRebaseInterval = 24 hours;
+        } else if (averageVolatility < 10) {
+            newRebaseInterval = 12 hours;
+        } else if (averageVolatility < 20) {
+            newRebaseInterval = 6 hours;
+        } else {
+            newRebaseInterval = 1 hours;
+        }
+
+        return newRebaseInterval;
     }
 
-    // Calculate average daily volatility
-    uint256 totalVolatility = 0;
-    for (uint256 i = 0; i < dailyChanges.length; i++) {
-        totalVolatility += dailyChanges[i];
-    }
-    uint256 averageVolatility = totalVolatility / dailyChanges.length;
+    function rebase() public nonReentrant {
+    require(totalSupply() <= maxSupply, "Max supply reached");
+    require(block.timestamp >= nextRebaseTime, "Rebase not allowed yet");
 
-    // Adjust rebase interval based on average daily volatility
-    uint256 newRebaseInterval;
-    if (averageVolatility < 5) {
-        newRebaseInterval = 24 hours; // Rebase once per day
-    } else if (averageVolatility < 10) {
-        newRebaseInterval = 12 hours; // Rebase twice per day
-    } else if (averageVolatility < 20) {
-        newRebaseInterval = 6 hours; // Rebase four times per day
-    } else {
-        newRebaseInterval = 1 hours; // Rebase 24 times per day
+    // Get the current market data and time series data
+    MarketData memory currentMarketData = loadMarketData();
+    MarketAndTimeSeriesData memory data = loadMarketAndTimeSeriesData();
+
+    // Preprocess market data for CNN model
+    CNNInputData memory cnnInputData = preprocessCNNInputData(data.marketData);
+
+    // Pass market data to CNN model for prediction
+    CNNOutputData memory cnnOutputData = predictCNNModel(cnnInputData);
+
+    // Pass time series data to time series forecasting model for prediction
+    TimeSeriesOutputData memory timeSeriesOutputData = predictTimeSeriesModel(data.timeSeriesData);
+
+    // Calculate the new token supply based on the predicted price changes
+    uint256 newSupply = calculateNewSupply(cnnOutputData, timeSeriesOutputData);
+
+    // Input validation to check that newSupply is within the expected range
+    require(newSupply > 0, "New supply must be greater than zero");
+    require(newSupply <= maxSupply, "New supply exceeds maximum supply");
+
+    // Make sure the new supply does not exceed the maximum supply
+    if (newSupply > maxSupply) {
+        newSupply = maxSupply;
     }
 
-    return newRebaseInterval;
+    MarketAndTimeSeriesData memory updatedData = MarketAndTimeSeriesData({
+        marketData: MarketData({
+            price: data.marketData.price,
+            volume: data.marketData.volume
+        }),
+        timeSeriesData: TimeSeriesData({
+            dataPoints: timeSeriesOutputData.dataPoints
+        })
+    });
+
+    // Update the token supply and emit a rebase event
+    _totalSupply = newSupply;
+    emit Rebase(newSupply, block.timestamp);
+
+    // Update the last price and next rebase time
+    lastPrice = data.marketData.price;
+    nextRebaseTime = block.timestamp + REBASE_INTERVAL;
+
+    // Store the historical price
+    historicalPrices[block.timestamp] = lastPrice;  
 }
-    function rebase() public {
-        require(totalSupply() <= maxSupply, "Max supply reached");
-        require(block.timestamp >= nextRebaseTime, "Rebase not allowed yet");
-
-        // Get the current market data and time series data
-        MarketData memory currentMarketData = loadMarketData();
-        MarketAndTimeSeriesData memory data = loadMarketAndTimeSeriesData();
-
-        // Preprocess market data for CNN model
-        CNNInputData memory cnnInputData = preprocessCNNInputData(data.marketData);
-
-        // Pass market data to CNN model for prediction
-        CNNOutputData memory cnnOutputData = predictCNNModel(cnnInputData);
-
-        // Pass time series data to time series forecasting model for prediction
-        TimeSeriesOutputData memory timeSeriesOutputData = predictTimeSeriesModel(data.timeSeriesData);
-
-        // Predict future price changes using CNN and time series forecasting
-        CNNOutputData memory cnnOutputData = predictCNNModel(currentMarketData);
-        TimeSeriesOutputData memory timeSeriesOutputData = predictTimeSeriesModel(currentTimeSeriesData);
-
-        // Calculate the new token supply based on the predicted price changes
-        uint256 newSupply = calculateNewSupply(cnnOutputData, timeSeriesOutputData);
-
-        // Input validation to check that newSupply is within the expected range
-        require(newSupply > 0, "New supply must be greater than zero");
-        require(newSupply <= maxSupply, "New supply exceeds maximum supply");
-
-        // Make sure the new supply does not exceed the maximum supply
-        if (newSupply > maxSupply) {
-            newSupply = maxSupply;
-    }
-
-        MarketAndTimeSeriesData memory updatedData = MarketAndTimeSeriesData({
-            marketData: MarketData({
-                price: data.marketData.price,
-                volume: data.marketData.volume
-            }),
-            timeSeriesData: TimeSeriesData({
-                dataPoints: timeSeriesOutputData.dataPoints
-            })
-        });
-
-        // Update the token supply and emit a rebase event
-        _totalSupply = newSupply;
-        emit Rebase(newSupply, block.timestamp);
-
-        // Update the last price and next rebase time
-        lastPrice = data.marketData.price;
-        nextRebaseTime = block.timestamp + REBASE_INTERVAL;
-
-        // Store the historical price
-        historicalPrices[block.timestamp] = lastPrice;  
-    }
 
     function loadMarketAndTimeSeriesData() internal view returns (MarketAndTimeSeriesData memory) {
         // Get the latest price from the Chainlink oracle
@@ -198,7 +200,14 @@ contract Trip is ERC20, AccessControl {
     function preprocessCNNInputData(MarketData memory marketData) internal pure returns (CNNInputData memory) {
         // Preprocess market data for CNN model and return as a struct
         CNNInputData memory cnnInputData;
-        // Preprocessing code here
+        
+        // Rescale the price and volume data to be between 0 and 1
+        uint256 scaledPrice = (marketData.price - minPrice) / (maxPrice - minPrice);
+        uint256 scaledVolume = (marketData.volume - minVolume) / (maxVolume - minVolume);
+        
+        // Store the preprocessed data in the output struct
+        cnnInputData.marketData = [scaledPrice, scaledVolume];
+        
         return cnnInputData;
     }
 
@@ -206,7 +215,28 @@ contract Trip is ERC20, AccessControl {
     function predictCNNModel(CNNInputData memory cnnInputData) internal view returns (CNNOutputData memory) {
         // Pass market data to CNN model for prediction and return output as a struct
         CNNOutputData memory cnnOutputData;
-        // Prediction code here
+
+        // Prepare data for CNN model
+        uint256[] memory marketData = new uint256[](cnnInputData.marketData.length);
+        for (uint256 i = 0; i < cnnInputData.marketData.length; i++) {
+            marketData[i] = cnnInputData.marketData[i];
+        }
+        uint256[] memory reshapedData = new uint256[](marketData.length * 1);
+        for (uint256 i = 0; i < marketData.length; i++) {
+            reshapedData[i] = marketData[i];
+        }
+        uint256[][] memory X = new uint256[][](1);
+        X[0] = reshapedData;
+
+        // Load the trained model
+        Model storage model = trainedModels[cnnInputData.modelName];
+
+        // Make predictions
+        uint256[] memory yPred = model.predict(X)[0];
+
+        // Return output as a struct
+        cnnOutputData.price = yPred[0];
+
         return cnnOutputData;
     }
 
@@ -268,55 +298,55 @@ contract Trip is ERC20, AccessControl {
     }
 
     // Function to calculate the predicted price change using ARIMA forecasting
-function predictPriceChange(uint256[] memory historicalPrices, uint256 currentPrice) internal pure returns (int256) {
-    // Compute the mean of the historical prices
-    uint256 n = historicalPrices.length;
-    uint256 sum = 0;
-    for (uint256 i = 0; i < n; i++) {
-        sum += historicalPrices[i];
-    }
-    uint256 mean = sum / n;
-
-    // Compute the differences between each historical price and the mean
-    int256[] memory differences = new int256[](n);
-    for (uint256 i = 0; i < n; i++) {
-        differences[i] = int256(historicalPrices[i]) - int256(mean);
-    }
-
-    // Compute the autocovariances of the differences
-    int256[] memory autocovariances = new int256[](n);
-    for (uint256 k = 0; k < n; k++) {
-        int256 sum = 0;
-        for (uint256 i = k; i < n; i++) {
-            sum += differences[i] * differences[i-k];
+    function predictPriceChange(uint256[] memory historicalPrices, uint256 currentPrice) internal pure returns (int256) {
+        // Compute the mean of the historical prices
+        uint256 n = historicalPrices.length;
+        uint256 sum = 0;
+        for (uint256 i = 0; i < n; i++) {
+            sum += historicalPrices[i];
         }
-        autocovariances[k] = sum / int256(n);
-    }
+        uint256 mean = sum / n;
 
-    // Find the order of the ARIMA model using the partial autocorrelation function
-    uint256 p = 0;
-    for (uint256 k = 1; k < n; k++) {
-        int256 pacf = autocovariances[k];
-        for (uint256 j = 1; j < k; j++) {
-            pacf -= int256(j) * autocovariances[j] * autocovariances[k-j] / autocovariances[0];
+        // Compute the differences between each historical price and the mean
+        int256[] memory differences = new int256[](n);
+        for (uint256 i = 0; i < n; i++) {
+            differences[i] = int256(historicalPrices[i]) - int256(mean);
         }
-        if (pacf > 0) {
-            p = k;
+
+        // Compute the autocovariances of the differences
+        int256[] memory autocovariances = new int256[](n);
+        for (uint256 k = 0; k < n; k++) {
+            int256 sum = 0;
+            for (uint256 i = k; i < n; i++) {
+                sum += differences[i] * differences[i-k];
+            }
+            autocovariances[k] = sum / int256(n);
         }
-    }
+
+        // Find the order of the ARIMA model using the partial autocorrelation function
+        uint256 p = 0;
+        for (uint256 k = 1; k < n; k++) {
+            int256 pacf = autocovariances[k];
+            for (uint256 j = 1; j < k; j++) {
+                pacf -= int256(j) * autocovariances[j] * autocovariances[k-j] / autocovariances[0];
+            }
+            if (pacf > 0) {
+                p = k;
+            }
+        }
 
     // Compute the ARIMA prediction for the next time step
-    int256 prediction = int256(currentPrice) - int256(mean);
-    for (uint256 k = 1; k <= p; k++) {
-        prediction -= int256(autocovariances[k]) * (int256(historicalPrices[n-k]) - int256(mean));
+        int256 prediction = int256(currentPrice) - int256(mean);
+        for (uint256 k = 1; k <= p; k++) {
+            prediction -= int256(autocovariances[k]) * (int256(historicalPrices[n-k]) - int256(mean));
+        }
+        prediction += int256(mean);
+
+        // Compute price change
+        int256 priceChange = prediction - int256(currentPrice);
+
+        return priceChange;
     }
-    prediction += int256(mean);
-
-    // Compute price change
-    int256 priceChange = prediction - int256(currentPrice);
-
-    return priceChange;
-}
 
 
     // Function to calculate the new token price
@@ -348,3 +378,4 @@ function totalSupply() public view returns (uint256) {
         fallback() external {
             revert();
         }
+}
