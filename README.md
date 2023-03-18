@@ -6,16 +6,14 @@ Install Git: If you haven't already installed Git on your computer, go to the Gi
 Clone the repository: Open your terminal or command prompt and navigate to the directory where you want to clone the repository. Then, run the following command to clone the repository:
 
 git clone https://github.com/Tripverseofficial/TRIP-ML-Token.git
-Install Brownie: The project is built using the Brownie framework, so you'll need to install Brownie to work with the project. To install Brownie, run the following command:
 
+Install Brownie: The project is built using the Brownie framework, so you'll need to install Brownie to work with the project. To install Brownie, run the following command:
 
 pip install eth-brownie
 Set up the project: After installing Brownie, navigate to the project directory by running the following command:
 
-
 cd TRIP-ML-Token
 Next, you'll need to set up the project by running the following command:
-
 
 brownie pm install OpenZeppelin/openzeppelin-contracts@4.4.1
 This will install the OpenZeppelin contract library, which is a dependency of the project.
