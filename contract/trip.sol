@@ -28,30 +28,31 @@ contract Trip is ERC20, AccessControl, ReentrancyGuard {
     // Chainlink price feed interface
     AggregatorV3Interface internal priceFeed;
 
-    // Struct to store market data
+// Struct to store market data
     struct MarketData {
         uint256 currentPrice;
         uint256 lastPrice;
     }
     
-    struct CNNInputData {
-        uint256[] prices;
-        uint256[] volumes;
-    }
-    
-    struct CNNOutputData {
-        uint256 predictedPrice;
-        uint256 predictedVolume;
-    }
-    
-    struct TimeSeriesData {
-        DataPoint[] dataPoints;
-    }
-
     // Struct to store time series data
     struct DataPoint {
         uint256 timestamp;
         uint256 price;
+    }
+    
+    // Struct to store CNN input data
+    struct CNNInputData {
+        uint256[] prices;
+        uint256[] volumes;
+    }
+
+    struct CNNOutputData {
+        uint256 predictedPrice;
+        uint256 predictedVolume;
+    }
+
+    struct TimeSeriesData {
+        DataPoint[] dataPoints;
     }
     
     struct TimeSeriesOutputData {
@@ -62,14 +63,13 @@ contract Trip is ERC20, AccessControl, ReentrancyGuard {
     struct MarketAndTimeSeriesData {
         MarketData marketData;
         TimeSeriesData timeSeriesData;
+    }
 
-        constructor(MarketData memory _marketData, TimeSeriesData memory _timeSeriesData) public {
+    constructor(MarketData memory _marketData, TimeSeriesData memory _timeSeriesData) public {
     require(_timeSeriesData.dataPoints.length == 1, "Time series data should have a single data point");
     marketData = _marketData;
     timeSeriesData = _timeSeriesData;
 }
-
-
 
     event Rebase(uint256 indexed newSupply, uint256 indexed timestamp);
 
@@ -84,6 +84,39 @@ contract Trip is ERC20, AccessControl, ReentrancyGuard {
 
         // Store the initial price in the historical prices mapping
         historicalPrices[block.timestamp] = lastPrice;
+    }
+
+    
+    // Function to load time series data
+    function loadTimeSeriesData(uint256[] memory timestamps, uint256[] memory prices) internal pure returns (TimeSeriesData memory) {
+        require(timestamps.length == prices.length, "Timestamps and prices arrays must have the same length");
+
+        DataPoint[] memory dataPoints = new DataPoint[](timestamps.length);
+        for (uint256 i = 0; i < timestamps.length; i++) {
+            dataPoints[i] = DataPoint(timestamps[i], prices[i]);
+        }
+
+        return TimeSeriesData(dataPoints);
+    }
+
+    // Function to load sentiment data
+    function loadSentimentData(uint256 sentiment) internal pure returns (uint256) {
+        return sentiment;
+    }
+
+    // Function to load CNN input data
+    function loadCNNData(uint256[] memory prices, uint256[] memory volumes) internal pure returns (CNNInputData memory) {
+        require(prices.length == volumes.length, "Prices and volumes arrays must have the same length");
+
+        return CNNInputData(prices, volumes);
+    }
+
+    // Function to load market and time series data
+    function loadMarketAndTimeSeriesData() internal view returns (MarketAndTimeSeriesData memory) {
+        MarketData memory marketData = loadMarketData();
+        TimeSeriesData memory timeSeriesData = loadTimeSeriesData([timestamp1, timestamp2, ...], [price1, price2, ...]);
+
+        return MarketAndTimeSeriesData(marketData, timeSeriesData);
     }
 
     function getPrice() public view returns (uint256) {
