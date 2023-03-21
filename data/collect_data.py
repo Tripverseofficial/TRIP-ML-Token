@@ -48,15 +48,19 @@ def collect_data():
 
 while True:
     # Call function to collect data
-    df = collect_data()
-    
-    # Save data to historical_data.csv file
-    with open("historical_data.csv", "a") as f:
-        df.to_csv(f, header=f.tell()==0, index=False)
+    try:
+        df = collect_data()
         
-    # Save data to market_data.csv file
-    with open("market_data.csv", "w") as f:
-        df.to_csv(f, header=True, index=False)
+        # Save data to historical_data.csv file
+        with open("historical_data.csv", "a") as f:
+            df.to_csv(f, header=f.tell()==0, index=False)
+            
+        # Save data to market_data.csv file
+        with open("market_data.csv", "w") as f:
+            df.to_csv(f, header=True, index=False)
+
+    except Exception as e:
+        print(f"Error occurred while collecting and saving data: {e}")
 
     # Sleep for 10 seconds before collecting data again
     time.sleep(10)
