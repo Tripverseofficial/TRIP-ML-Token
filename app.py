@@ -3,22 +3,11 @@ from typing import Any, Dict
 
 from flask import Flask, jsonify, request
 from jsonschema import validate, ValidationError
-from scripts.CNN_model.convolutional import predict_price as cnn_predict
-from scripts.time_series.time import predict_price as time_predict
 
+from models.CNN_model.convolutional import predict_price as cnn_predict
+from models.time_series.time import predict_price as time_predict
 
-def load_env_var(key: str, default: Any = None) -> Any:
-    """Load environment variable or return default value."""
-    return os.environ.get(key, default)
-
-
-# Load historical data
-historical_data_path = load_env_var("HISTORICAL_DATA_PATH", "data/historical_data.json")
-historical_data = load_data.load_historical_data(historical_data_path)
-
-# Load market data
-market_data_path = load_env_var("MARKET_DATA_PATH", "data/market_data.json")
-market_data = load_data.load_market_data(market_data_path)
+app = Flask(__name__)
 
 # Define JSON schema for input data
 input_data_schema = {
@@ -29,9 +18,6 @@ input_data_schema = {
     },
     "required": ["input", "model_type"],
 }
-
-app = Flask(__name__)
-
 
 @app.route('/predict', methods=['POST'])
 def predict() -> Dict[str, Any]:
@@ -47,6 +33,12 @@ def predict() -> Dict[str, Any]:
     # Get input data from request
     input_data = input_data['input']
 
+    # Load historical and market data from environment variables
+    historical_data_path = os.getenv("HISTORICAL_DATA_PATH")
+    market_data_path = os.getenv("MARKET_DATA_PATH")
+    historical_data = load_data.load_historical_data(historical_data_path)
+    market_data = load_data.load_market_data(market_data_path)
+
     # Determine which machine learning model to use based on model_type
     model_type = input_data['model_type']
     if model_type == 'cnn':
@@ -59,7 +51,6 @@ def predict() -> Dict[str, Any]:
 
     # Return prediction in JSON format
     return jsonify({'prediction': prediction})
-
 
 if __name__ == '__main__':
     app.run()
